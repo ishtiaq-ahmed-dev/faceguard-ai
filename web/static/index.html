@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FaceGuard AI &mdash; Anti-Spoofing Face Verification</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#128737;</text></svg>">
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" class="brand-mark" aria-hidden="true">
+        <path d="M16 2 4 7v9c0 7.2 5 12.6 12 14 7-1.4 12-6.8 12-14V7L16 2z"
+              fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>
+        <circle cx="16" cy="14" r="3.4" fill="none" stroke="currentColor" stroke-width="2.2"/>
+        <path d="M10 23c1.4-3 3.6-4.4 6-4.4s4.6 1.4 6 4.4"
+              fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+      <span>FaceGuard<span class="brand-ai">AI</span></span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-view="verify" role="tab">Verify</button>
+      <button class="tab" data-view="enrol" role="tab">Enrol</button>
+      <button class="tab" data-view="audit" role="tab">Security Log</button>
+      <button class="tab" data-view="about" role="tab">How it works</button>
+    </nav>
+    <div class="nav-right">
+      <span id="system-pill" class="pill pill-muted">Starting&hellip;</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ================= VERIFY ================= -->
+<section class="view is-active" id="view-verify">
+  <div class="hero">
+    <span class="eyebrow">
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+        <path d="M8 1 1 4.5 8 8l7-3.5L8 1z" fill="currentColor" opacity=".9"/>
+        <path d="M1 8l7 3.5L15 8M1 11.5L8 15l7-3.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+      Layered liveness detection
+    </span>
+    <h1>Prove you are <em>present</em>,<br>not just recognisable</h1>
+    <p class="sub">
+      A printed photo of you is recognisable. So is a video of you on a phone screen.
+      This system checks the surface, the eyes and the geometry across a sequence of
+      frames before it will accept either as you.
+    </p>
+  </div>
+
+  <div class="stage">
+    <div class="camera-panel">
+      <div class="camera-frame" id="camera-frame">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div class="camera-idle" id="camera-idle">
+          <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
+            <path d="M2 7a2 2 0 0 1 2-2h3l1.5-2h7L17 5h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7z"
+                  fill="none" stroke="currentColor" stroke-width="1.6"/>
+            <circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          </svg>
+          <p>Camera is off</p>
+          <small>Nothing is recorded. Frames exist only for the length of one attempt.</small>
+        </div>
+        <div class="challenge-banner" id="challenge-banner" hidden>
+          <span class="challenge-icon" id="challenge-icon">&#8635;</span>
+          <span id="challenge-text">Follow the instruction</span>
+        </div>
+      </div>
+
+      <div class="progress-row">
+        <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+        <span class="progress-label" id="progress-label">0 / 0 frames</span>
+      </div>
+
+      <p class="hint" id="hint">Press Start to begin a verification attempt.</p>
+
+      <div class="controls">
+        <button class="btn btn-primary" id="btn-start">Start verification</button>
+        <button class="btn btn-ghost" id="btn-stop" disabled>Stop</button>
+        <button class="btn btn-ghost" id="btn-pin">Use PIN instead</button>
+      </div>
+    </div>
+
+    <aside class="results-panel">
+      <div class="verdict" id="verdict">
+        <div class="verdict-icon" id="verdict-icon">&#9679;</div>
+        <div>
+          <h2 id="verdict-title">Idle</h2>
+          <p id="verdict-message">No attempt has been made yet.</p>
+        </div>
+      </div>
+
+      <div class="confidence-grid">
+        <div class="metric">
+          <label>Detection confidence
+            <span class="tip" title="Is there a face here at all? Independent of who it is.">?</span>
+          </label>
+          <div class="meter"><div class="meter-fill meter-blue" id="meter-detection"></div></div>
+          <span class="metric-value" id="value-detection">&mdash;</span>
+        </div>
+        <div class="metric">
+          <label>Recognition confidence
+            <span class="tip" title="Is this the right person? Reported separately from detection on purpose.">?</span>
+          </label>
+          <div class="meter"><div class="meter-fill meter-violet" id="meter-recognition"></div></div>
+          <span class="metric-value" id="value-recognition">&mdash;</span>
+        </div>
+        <div class="metric">
+          <label>Liveness score
+            <span class="tip" title="Weighted combination of the signals that could actually be measured.">?</span>
+          </label>
+          <div class="meter"><div class="meter-fill meter-green" id="meter-liveness"></div></div>
+          <span class="metric-value" id="value-liveness">&mdash;</span>
+        </div>
+      </div>
+
+      <h3 class="section-title">Liveness signals</h3>
+      <ul class="signals" id="signals">
+        <li class="signal-empty">Signals appear here after an attempt.</li>
+      </ul>
+
+      <div class="degraded" id="degraded" hidden></div>
+    </aside>
+  </div>
+</section>
+
+<!-- ================= ENROL ================= -->
+<section class="view" id="view-enrol">
+  <div class="hero compact">
+    <h1>Enrol a face</h1>
+    <p class="sub">
+      Templates are encrypted before they touch the disk and raw images are never
+      stored. Capture several frames at slightly different angles.
+    </p>
+  </div>
+
+  <div class="stage">
+    <div class="camera-panel">
+      <div class="camera-frame">
+        <video id="enrol-video" autoplay playsinline muted></video>
+        <div class="camera-idle" id="enrol-idle">
+          <p>Camera is off</p>
+          <small>Start the camera, then capture 5&ndash;10 frames.</small>
+        </div>
+      </div>
+      <p class="hint" id="enrol-hint">Captured 0 frames.</p>
+      <div class="controls">
+        <button class="btn btn-ghost" id="btn-enrol-camera">Start camera</button>
+        <button class="btn btn-primary" id="btn-capture" disabled>Capture frame</button>
+        <button class="btn btn-ghost" id="btn-clear" disabled>Clear</button>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+
+    <aside class="results-panel">
+      <h3 class="section-title">Identity</h3>
+      <label class="field">
+        <span>Name</span>
+        <input type="text" id="enrol-name" placeholder="e.g. Ishtiaq Ahmed" maxlength="64">
+      </label>
+      <label class="field">
+        <span>Backup PIN <small>(optional, 6+ digits)</small></span>
+        <input type="password" id="enrol-pin" placeholder="Fallback if biometrics fail" inputmode="numeric" maxlength="32">
+      </label>
+      <button class="btn btn-primary btn-block" id="btn-enrol" disabled>Enrol identity</button>
+      <p class="hint" id="enrol-status"></p>
+
+      <h3 class="section-title">Enrolled</h3>
+      <ul class="identity-list" id="identity-list">
+        <li class="signal-empty">Nobody is enrolled yet.</li>
+      </ul>
+    </aside>
+  </div>
+</section>
+
+<!-- ================= AUDIT ================= -->
+<section class="view" id="view-audit">
+  <div class="hero compact">
+    <h1>Security log</h1>
+    <p class="sub">
+      Rejections are recorded in the same detail as acceptances. A log that only
+      shows successful logins cannot show you an attack in progress.
+    </p>
+  </div>
+  <div class="panel">
+    <div class="table-scroll">
+      <table class="audit-table">
+        <thead>
+          <tr><th>Time</th><th>Event</th><th>Result</th><th>Reason</th><th>Identity</th><th>Live</th><th>ms</th></tr>
+        </thead>
+        <tbody id="audit-body">
+          <tr><td colspan="7" class="signal-empty">No records yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <button class="btn btn-ghost" id="btn-refresh-audit">Refresh</button>
+  </div>
+</section>
+
+<!-- ================= ABOUT ================= -->
+<section class="view" id="view-about">
+  <div class="hero compact">
+    <h1>How the liveness check works</h1>
+    <p class="sub">Four independent signals, chosen so that defeating one does not help defeat the next.</p>
+  </div>
+
+  <div class="cards">
+    <article class="card">
+      <div class="card-mark card-mark-green">1</div>
+      <h3>Surface texture</h3>
+      <p>
+        Skin has fine irregular micro-texture. Printing replaces it with ink dots;
+        a screen replaces it with a pixel grid and adds moir&eacute;. The system measures
+        local binary patterns, the radial frequency spectrum, and colour and
+        specular statistics, then classifies the surface.
+      </p>
+      <p class="card-note"><strong>Beaten by:</strong> a very high quality print, or a mask made of skin-like material.</p>
+    </article>
+
+    <article class="card">
+      <div class="card-mark card-mark-blue">2</div>
+      <h3>Blink</h3>
+      <p>
+        Eye aspect ratio and MediaPipe blink activations are tracked across the
+        sequence. A blink counts only if the eye closes and reopens within
+        70&ndash;500&nbsp;ms &mdash; the physiological range. Faster is tracking noise; slower is
+        a squint or something moved across the eyes.
+      </p>
+      <p class="card-note"><strong>Beaten by:</strong> a video replay, which contains real blinks.</p>
+    </article>
+
+    <article class="card">
+      <div class="card-mark card-mark-violet">3</div>
+      <h3>Parallax under motion</h3>
+      <p>
+        This is the one that does the real work. Rotating a flat sheet in front of a
+        camera is <em>exactly</em> a homography. So the system fits the best homography
+        between frames: if it fits, the thing that turned was flat. It also checks
+        that the misfit tracks landmark depth &mdash; real parallax moves the nose more
+        than the cheek.
+      </p>
+      <p class="card-note"><strong>Beaten by:</strong> a cooperative victim, or a real 3-D mask.</p>
+    </article>
+
+    <article class="card">
+      <div class="card-mark card-mark-amber">4</div>
+      <h3>Depth &mdash; honestly unavailable</h3>
+      <p>
+        With a real depth sensor this is the strongest signal there is. This machine
+        has none, so the system says so and refuses to substitute something weaker.
+        The obvious shortcut &mdash; fitting a plane to MediaPipe's inferred z &mdash; was
+        implemented, measured at Cohen's d&nbsp;=&nbsp;0.30, and given zero weight. It does not work.
+      </p>
+      <p class="card-note"><strong>Status:</strong> reported for transparency, never counted as evidence.</p>
+    </article>
+  </div>
+
+  <div class="panel policy-panel">
+    <h3 class="section-title">Live policy</h3>
+    <pre id="policy-dump">Loading&hellip;</pre>
+  </div>
+</section>
+
+</main>
+
+<!-- PIN dialog -->
+<dialog id="pin-dialog" class="dialog">
+  <form method="dialog" class="dialog-inner">
+    <h3>PIN fallback</h3>
+    <p class="dialog-sub">
+      For when biometrics legitimately cannot succeed. Failed PIN attempts share the
+      same lockout counter as failed face attempts.
+    </p>
+    <label class="field"><span>Name</span><input type="text" id="pin-name" maxlength="64"></label>
+    <label class="field"><span>PIN</span><input type="password" id="pin-value" inputmode="numeric" maxlength="32"></label>
+    <p class="hint" id="pin-status"></p>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" value="cancel">Cancel</button>
+      <button class="btn btn-primary" id="btn-pin-submit" value="ok" type="button">Verify PIN</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
