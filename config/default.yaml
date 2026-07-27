@@ -1,0 +1,264 @@
+# FaceGuard AI - default configuration.
+#
+# Every decision threshold in the system lives in this file. Nothing in the
+# Python source may hard-code an accept/reject boundary. Override any value by
+# passing --config to the CLI or by setting FACEGUARD_CONFIG.
+#
+# Tightening a threshold generally trades convenience for security. Each entry
+# notes which direction is "more secure" so an operator can tune it deliberately
+# rather than by trial and error.
+
+detection:
+  # MediaPipe Tasks model assets. Fetched by tools/fetch_models.py.
+  detector_model: models/blaze_face_short_range.tflite
+  landmarker_model: models/face_landmarker.task
+  # Every frame is resized to this width before analysis. Several quality
+  # measurements are not scale-invariant - Laplacian sharpness of one photo
+  # measured 0.084 at 3120px wide and 1.000 at 640px - so a single working
+  # resolution is what makes one threshold mean one thing for every caller.
+  working_width: 640
+  # Minimum detector score to treat a region as a face at all. This is the
+  # DETECTION confidence and is never mixed with recognition confidence.
+  min_detection_confidence: 0.60
+  # More than this many faces in frame aborts the attempt: an enrolment or
+  # verification with a bystander in shot is ambiguous, so we refuse it.
+  max_faces_in_frame: 1
+  # Face width as a fraction of frame width. Guards "too far" and "too close",
+  # both of which degrade every downstream signal.
+  min_face_ratio: 0.10
+  max_face_ratio: 0.80
+
+quality:
+  # Below this overall score a frame is dropped from the decision window
+  # rather than being scored badly. Higher = stricter.
+  min_overall: 0.40
+  min_brightness: 0.25
+  min_sharpness: 0.12
+  # Laplacian variance that counts as perfectly sharp, and pixel std-dev that
+  # counts as perfect contrast. Used to normalise raw measurements to 0..1.
+  sharpness_reference: 450.0
+  contrast_reference: 65.0
+  # Target mean luma. Distance from this drives the brightness score.
+  ideal_brightness: 127.0
+  # Minimum face box area in pixels that scores 1.0 for size.
+  reference_face_area: 12100 # 110x110
+  weights:
+    sharpness: 0.30
+    brightness: 0.25
+    contrast: 0.20
+    size: 0.25
+
+recognition:
+  # DeepFace model used for embeddings.
+  model_name: Facenet512
+  # Cosine similarity a probe must reach against an enrolled template.
+  # Higher = stricter = lower false acceptance, higher false rejection.
+  match_threshold: 0.62
+  # The best match must beat the runner-up identity by this margin, otherwise
+  # the result is AMBIGUOUS_MATCH rather than a guess.
+  margin_threshold: 0.05
+  # Independent frames that must agree on the same identity before a match is
+  # reported. This is what makes single-frame spoofing insufficient.
+  min_agreeing_frames: 3
+  # Per-identity aggregation across enrolled templates. "max" is standard;
+  # "mean" is stricter but needs several clean enrolment images.
+  aggregation: max
+
+liveness:
+  # Rolling window the temporal signals are computed over, in frames.
+  window_frames: 45
+  # No decision of any kind is emitted before this many usable frames have
+  # been collected. Hard floor against single-frame decisions.
+  min_frames: 15
+
+  blink:
+    # Eye-aspect-ratio thresholds, expressed as a FRACTION of the subject's own
+    # open-eye baseline rather than as absolute values. Measured on this
+    # project's images, a wide-open eye ranges from EAR 0.245 to 0.523 between
+    # individuals - more than a 2x spread - so any fixed absolute threshold is
+    # either unreachable for one person or permanently tripped for another.
+    # Normalising against the window's own baseline removes that dependence.
+    # Below ear_closed_ratio x baseline counts as "closed"; above
+    # ear_open_ratio x baseline counts as "open". The gap between them is
+    # deliberate hysteresis, so noise around a single threshold cannot
+    # manufacture blinks.
+    ear_closed_ratio: 0.70
+    ear_open_ratio: 0.85
+    # MediaPipe blendshape blink score equivalents (used when available;
+    # pose-robust where raw EAR is not).
+    blendshape_closed: 0.50
+    blendshape_open: 0.25
+    # Physiological gate. A human spontaneous blink lasts roughly 100-400 ms.
+    # Anything faster is landmark noise; anything slower is a squint or a
+    # deliberate occlusion, and neither counts as proof of life.
+    min_blink_ms: 70
+    max_blink_ms: 500
+    # Blinks required inside the window to pass the signal.
+    required_blinks: 1
+
+  texture:
+    # Path to the trained spoof classifier. If absent, the texture signal
+    # reports UNAVAILABLE and fusion degrades explicitly (never silently).
+    model_path: models/spoof_classifier.joblib
+    # Probability of "live" the classifier must output. Higher = stricter.
+    # Set from leave-one-identity-out cross-validation in
+    # tools/train_spoof_classifier.py, which minimised ACER at this value.
+    # Retrain and re-tune if you change cameras or the attack corpus.
+    live_threshold: 0.75
+    # Face crop is resized to this before feature extraction so that features
+    # do not depend on how close the subject stood.
+    crop_size: 128
+    # Fraction of frames in the window that must be classified live.
+    min_live_frame_ratio: 0.60
+
+  motion:
+    # -- Primary signal: planar parallax during head rotation ----------------
+    #
+    # When a real head turns, near features (nose, brow ridge) shift across the
+    # frame faster than far ones. That parallax cannot be reproduced by any
+    # flat object, because rotating a plane in front of a camera is EXACTLY a
+    # homography - so if the landmark motion between two frames is fully
+    # explained by one homography, the thing that moved was flat.
+    #
+    # This is what stops the obvious defeat of naive challenge-response, where
+    # an attacker simply tilts a printed photo to fake a head turn. It also
+    # only works while the head is actually rotating: at a fixed pose there is
+    # no parallax to observe, which is why the active challenge and this check
+    # belong together.
+    #
+    # Two conditions, both required. Neither separates cleanly on its own.
+    #
+    # 1. Residual per degree of rotation. In theory a flat target scores
+    #    exactly 0. In practice it does not: warping an image and re-detecting
+    #    it makes the landmarker refit slightly differently, and that refit
+    #    noise is not homography-explainable either. Measured end to end
+    #    (tools/measure_parallax.py): flat target 0.00152 +/- 0.00101 reaching
+    #    0.00308, real facial geometry 0.00317 +/- 0.00158 from 0.00216. Those
+    #    distributions OVERLAP, which is why a second condition exists.
+    #
+    # 2. Correlation between each landmark's residual and its depth. This is
+    #    the part that is hard to fake. Genuine parallax displaces landmarks in
+    #    proportion to how far forward they sit - the nose moves most, the
+    #    cheeks least - whereas refit noise is spatially uncorrelated with
+    #    depth. Measured: flat 0.503 +/- 0.199 reaching 0.762, real
+    #    0.821 +/- 0.058 from 0.699. Cohen's d = 2.17.
+    #
+    # CALIBRATION WARNING: both figures come from SIMULATED attacks over only
+    # ~10 source images, and the real-face side is projected from MediaPipe's
+    # inferred z rather than measured from a live head turn. These thresholds
+    # are a defensible starting point, not a validated operating point. Run
+    # tools/calibrate_motion.py against your own camera, with a real printed
+    # photo, before treating this signal as a security control. The README
+    # says the same thing where a reviewer will see it.
+    min_parallax_per_degree: 0.00220
+    min_parallax_depth_correlation: 0.78
+    # Rotation needed between the two frames being compared before parallax is
+    # measurable at all. Below this the check reports UNAVAILABLE rather than
+    # guessing.
+    min_parallax_rotation_deg: 8.0
+
+    # -- Secondary signal: non-rigid deformation ----------------------------
+    #
+    # Ratio of deformable-region motion (lips, brows, eyelids) to rigid-region
+    # motion (nose bridge, temples, forehead).
+    #
+    # Treated as corroborating evidence only, on measured grounds. A static
+    # photo does NOT score 1.0 here: soft-tissue landmarks sit on low-contrast
+    # edges and are inherently noisier to localise than the nose bridge or eye
+    # corners, so a jittered still image already scores 1.33 +/- 0.12, ranging
+    # up to 1.55. Live faces measured so far do not clear that band by enough
+    # to gate on. The threshold below is therefore set above the observed
+    # static range, and this signal can only ever add confidence, never grant
+    # a pass on its own. Run tools/calibrate_motion.py on your own camera to
+    # measure both distributions on your hardware before relying on it.
+    min_nonrigid_residual: 0.0040
+    min_nonrigid_ratio: 1.80
+    # Rigid motion above this suggests the whole "face" is being waved around,
+    # which is what handheld print attacks look like.
+    max_rigid_translation: 0.60
+    # Degrees of yaw/pitch spread required to consider the head as having
+    # moved naturally during passive observation.
+    min_pose_variation_deg: 1.2
+    # Active challenge: degrees the subject must actually rotate.
+    challenge_yaw_deg: 18.0
+    challenge_pitch_deg: 12.0
+    # Seconds allowed to satisfy a challenge before CHALLENGE_TIMEOUT.
+    challenge_timeout_s: 8.0
+    # A genuine head turn is continuous. If the pose series jumps by more than
+    # this between consecutive frames, something was swapped in front of the
+    # lens and the challenge fails.
+    max_pose_jump_deg: 25.0
+
+  depth:
+    # Whether to attempt to open a real depth sensor (Intel RealSense etc.).
+    # With real depth this is by far the strongest signal here: a flat target
+    # simply has no facial relief to measure.
+    enable_hardware: true
+    # RMS residual of a plane fitted to the 3-D landmark cloud, normalised by
+    # interocular distance. Flat targets should fit a plane well.
+    min_planarity_residual: 0.020
+    # Is the software landmark-planarity proxy allowed to stand in when no
+    # depth camera is present?
+    #
+    # Default false, on measured evidence. MediaPipe's z coordinates are
+    # INFERRED from a 2-D image, never measured, so a photograph of a face
+    # still yields a face-shaped landmark cloud. Measured on this project's
+    # own images (tools/measure_depth_proxy.py): live mean residual 0.2060
+    # +/- 0.0149 vs simulated screen replay 0.2115 +/- 0.0207, Cohen's
+    # d = 0.30. That is not a usable separation, so the proxy is computed and
+    # reported for transparency but is NOT permitted to contribute evidence of
+    # liveness. Setting this true re-enables it; the README explains why you
+    # probably should not.
+    allow_software_proxy: false
+
+  policy:
+    # Signals that must pass for a live verdict. Texture is mandatory because
+    # it is the only signal that inspects the physical surface being shown to
+    # the camera. Of the remaining temporal signals, at least
+    # `min_optional_signals` must pass.
+    required: [texture]
+    optional: [blink, motion]
+    min_optional_signals: 1
+    # Require an active challenge-response, not just passive observation.
+    require_challenge: true
+    # Overall live score needed. Computed as a weighted mean of available
+    # signals; reported alongside the per-signal breakdown.
+    min_fused_score: 0.60
+    # Contribution of each signal to the fused score. Depth is zero on
+    # software-only hardware because the landmark proxy does not separate live
+    # from spoof (see liveness.depth above); it becomes meaningful only with a
+    # real depth sensor, at which point raise it and lower the others.
+    weights:
+      texture: 0.50
+      motion: 0.30
+      blink: 0.20
+      depth: 0.00
+
+session:
+  # Wall-clock budget for one verification attempt.
+  max_duration_s: 25.0
+  # Frames to buffer. Bounded so a long-running session cannot exhaust memory.
+  max_buffered_frames: 150
+  # Recognition is expensive; run it on every Nth usable frame rather than all.
+  recognise_every_n_frames: 5
+
+security:
+  # Failed attempts from one client before lockout begins.
+  max_failed_attempts: 5
+  # Sliding window over which failures are counted, in seconds.
+  failure_window_s: 300
+  # Lockout duration, doubling with each subsequent lockout up to the cap.
+  lockout_base_s: 30
+  lockout_max_s: 3600
+  # Encrypted template store. The key is read from FACEGUARD_KEY, or from
+  # key_file if that variable is unset. Raw face images are never persisted.
+  template_store: data/templates.enc
+  key_file: data/faceguard.key
+  # Structured audit log. Rejections are recorded with the same detail as
+  # acceptances, which is the point of having it.
+  audit_log: logs/audit.jsonl
+  # Optional PIN fallback for when biometrics legitimately cannot succeed.
+  # PINs are stored as scrypt hashes, never in plain text.
+  pin_store: data/pins.json
+  pin_min_length: 6
+  # Failed PIN attempts share the lockout counter with biometric failures.
